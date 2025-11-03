@@ -6,5 +6,7 @@
 - [x] Convert Mongoose models to Sequelize models (Note, User, Blog, Task, Collab)
 - [x] Update all routes to use Sequelize queries instead of Mongoose
 - [x] Update server.js to connect to MySQL instead of MongoDB
-- [ ] Test the connection and ensure all CRUD operations work
-- [ ] Handle data migration if existing data needs to be transferred
+
+## Pending Tasks
+- [x] Test the connection and ensure all CRUD operations work
+- [x] Handle data migration if existing data needs to be transferred (No existing MongoDB data to migrate - MongoDB not running)

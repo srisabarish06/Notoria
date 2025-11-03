@@ -1,15 +1,25 @@
 import express from 'express';
-import Blog from '../models/Blog.js';
+import Blog from '../models/BlogSequelize.js';
+import User from '../models/UserSequelize.js';
 import { authenticateToken } from '../middleware/auth.js';
+import { Op } from 'sequelize';
 
 const router = express.Router();
 
 // Get all public blogs
 router.get('/public', async (req, res) => {
   try {
-    const blogs = await Blog.find({ isPublic: true })
-      .populate('author', 'username email')
-      .sort({ createdAt: -1 });
+    const blogs = await Blog.findAll({
+      where: { isPublic: true },
+      include: [
+        {
+          model: User,
+          as: 'author',
+          attributes: ['username', 'email'],
+        },
+      ],
+      order: [['createdAt', 'DESC']],
+    });
 
     res.json(blogs);
   } catch (error) {
@@ -20,9 +30,17 @@ router.get('/public', async (req, res) => {
 // Get user's blogs
 router.get('/my', authenticateToken, async (req, res) => {
   try {
-    const blogs = await Blog.find({ author: req.user._id })
-      .populate('author', 'username email')
-      .sort({ createdAt: -1 });
+    const blogs = await Blog.findAll({
+      where: { authorId: req.user.id },
+      include: [
+        {
+          model: User,
+          as: 'author',
+          attributes: ['username', 'email'],
+        },
+      ],
+      order: [['createdAt', 'DESC']],
+    });
 
     res.json(blogs);
   } catch (error) {
@@ -33,15 +51,22 @@ router.get('/my', authenticateToken, async (req, res) => {
 // Get single blog
 router.get('/:id', async (req, res) => {
   try {
-    const blog = await Blog.findById(req.params.id)
-      .populate('author', 'username email');
+    const blog = await Blog.findByPk(req.params.id, {
+      include: [
+        {
+          model: User,
+          as: 'author',
+          attributes: ['username', 'email'],
+        },
+      ],
+    });
 
     if (!blog) {
       return res.status(404).json({ error: 'Blog not found' });
     }
 
     // Check access
-    if (!blog.isPublic && req.user?._id?.toString() !== blog.author._id.toString()) {
+    if (!blog.isPublic && req.user?.id !== blog.authorId) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
@@ -66,18 +91,25 @@ router.post('/', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Title and content are required' });
     }
 
-    const blog = new Blog({
+    const blog = await Blog.create({
       title,
       content,
-      tags: tags || [],
-      author: req.user._id,
+      tags: JSON.stringify(tags || []),
+      authorId: req.user.id,
       isPublic: isPublic || false,
     });
 
-    await blog.save();
-    await blog.populate('author', 'username email');
+    const blogWithAuthor = await Blog.findByPk(blog.id, {
+      include: [
+        {
+          model: User,
+          as: 'author',
+          attributes: ['username', 'email'],
+        },
+      ],
+    });
 
-    res.status(201).json(blog);
+    res.status(201).json(blogWithAuthor);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -86,28 +118,38 @@ router.post('/', authenticateToken, async (req, res) => {
 // Update blog
 router.put('/:id', authenticateToken, async (req, res) => {
   try {
-    const blog = await Blog.findById(req.params.id);
+    const blog = await Blog.findByPk(req.params.id);
 
     if (!blog) {
       return res.status(404).json({ error: 'Blog not found' });
     }
 
     // Only author can update
-    if (blog.author.toString() !== req.user._id.toString()) {
+    if (blog.authorId !== req.user.id) {
       return res.status(403).json({ error: 'Permission denied' });
     }
 
     const { title, content, tags, isPublic } = req.body;
+    const updateData = {};
 
-    if (title !== undefined) blog.title = title;
-    if (content !== undefined) blog.content = content;
-    if (tags !== undefined) blog.tags = tags;
-    if (isPublic !== undefined) blog.isPublic = isPublic;
+    if (title !== undefined) updateData.title = title;
+    if (content !== undefined) updateData.content = content;
+    if (tags !== undefined) updateData.tags = JSON.stringify(tags);
+    if (isPublic !== undefined) updateData.isPublic = isPublic;
 
-    await blog.save();
-    await blog.populate('author', 'username email');
+    await blog.update(updateData);
 
-    res.json(blog);
+    const updatedBlog = await Blog.findByPk(blog.id, {
+      include: [
+        {
+          model: User,
+          as: 'author',
+          attributes: ['username', 'email'],
+        },
+      ],
+    });
+
+    res.json(updatedBlog);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -116,18 +158,18 @@ router.put('/:id', authenticateToken, async (req, res) => {
 // Delete blog
 router.delete('/:id', authenticateToken, async (req, res) => {
   try {
-    const blog = await Blog.findById(req.params.id);
+    const blog = await Blog.findByPk(req.params.id);
 
     if (!blog) {
       return res.status(404).json({ error: 'Blog not found' });
     }
 
     // Only author can delete
-    if (blog.author.toString() !== req.user._id.toString()) {
+    if (blog.authorId !== req.user.id) {
       return res.status(403).json({ error: 'Permission denied' });
     }
 
-    await Blog.findByIdAndDelete(req.params.id);
+    await blog.destroy();
     res.json({ message: 'Blog deleted successfully' });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -137,25 +179,26 @@ router.delete('/:id', authenticateToken, async (req, res) => {
 // Like/Unlike blog
 router.post('/:id/like', authenticateToken, async (req, res) => {
   try {
-    const blog = await Blog.findById(req.params.id);
+    const blog = await Blog.findByPk(req.params.id);
 
     if (!blog) {
       return res.status(404).json({ error: 'Blog not found' });
     }
 
-    const userId = req.user._id.toString();
-    const likeIndex = blog.likes.findIndex(
-      (id) => id.toString() === userId
-    );
+    const likes = JSON.parse(blog.likes || '[]');
+    const userId = req.user.id;
+    const likeIndex = likes.indexOf(userId);
 
     if (likeIndex > -1) {
-      blog.likes.splice(likeIndex, 1);
+      likes.splice(likeIndex, 1);
     } else {
-      blog.likes.push(req.user._id);
+      likes.push(userId);
     }
 
+    blog.likes = JSON.stringify(likes);
     await blog.save();
-    res.json({ likes: blog.likes.length, liked: likeIndex === -1 });
+
+    res.json({ likes: likes.length, liked: likeIndex === -1 });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

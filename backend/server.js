@@ -33,8 +33,25 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Connect to MySQL
-connectDB();
+// Connect to MySQL and sync database
+connectDB().then(async () => {
+  try {
+    // Import models to ensure they are registered
+    await import('./models/UserSequelize.js');
+    await import('./models/NoteSequelize.js');
+    await import('./models/BlogSequelize.js');
+    await import('./models/TaskSequelize.js');
+    await import('./models/CollabSequelize.js');
+
+    // Sync all models with database
+    const sequelize = (await import('./config/mysql.js')).default;
+    await sequelize.sync({ alter: true }); // Use alter: true for development to update schema
+    console.log('Database synchronized successfully');
+  } catch (error) {
+    console.error('Database sync failed:', error);
+    process.exit(1);
+  }
+});
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {

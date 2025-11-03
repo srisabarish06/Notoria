@@ -1,5 +1,6 @@
 import express from 'express';
-import Task from '../models/Task.js';
+import Task from '../models/TaskSequelize.js';
+import User from '../models/UserSequelize.js';
 import { authenticateToken } from '../middleware/auth.js';
 
 const router = express.Router();
@@ -7,8 +8,17 @@ const router = express.Router();
 // Get all tasks for authenticated user
 router.get('/', authenticateToken, async (req, res) => {
   try {
-    const tasks = await Task.find({ owner: req.user._id })
-      .sort({ createdAt: -1 });
+    const tasks = await Task.findAll({
+      where: { ownerId: req.user.id },
+      include: [
+        {
+          model: User,
+          as: 'owner',
+          attributes: ['username', 'email'],
+        },
+      ],
+      order: [['createdAt', 'DESC']],
+    });
 
     res.json(tasks);
   } catch (error) {
@@ -19,14 +29,22 @@ router.get('/', authenticateToken, async (req, res) => {
 // Get single task
 router.get('/:id', authenticateToken, async (req, res) => {
   try {
-    const task = await Task.findById(req.params.id);
+    const task = await Task.findByPk(req.params.id, {
+      include: [
+        {
+          model: User,
+          as: 'owner',
+          attributes: ['username', 'email'],
+        },
+      ],
+    });
 
     if (!task) {
       return res.status(404).json({ error: 'Task not found' });
     }
 
     // Check ownership
-    if (task.owner.toString() !== req.user._id.toString()) {
+    if (task.ownerId !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
@@ -45,17 +63,26 @@ router.post('/', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Title is required' });
     }
 
-    const task = new Task({
+    const task = await Task.create({
       title,
       description: description || '',
       status: status || 'todo',
       dueDate: dueDate || null,
       priority: priority || 'medium',
-      owner: req.user._id,
+      ownerId: req.user.id,
     });
 
-    await task.save();
-    res.status(201).json(task);
+    const taskWithOwner = await Task.findByPk(task.id, {
+      include: [
+        {
+          model: User,
+          as: 'owner',
+          attributes: ['username', 'email'],
+        },
+      ],
+    });
+
+    res.status(201).json(taskWithOwner);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -64,27 +91,39 @@ router.post('/', authenticateToken, async (req, res) => {
 // Update task
 router.put('/:id', authenticateToken, async (req, res) => {
   try {
-    const task = await Task.findById(req.params.id);
+    const task = await Task.findByPk(req.params.id);
 
     if (!task) {
       return res.status(404).json({ error: 'Task not found' });
     }
 
     // Check ownership
-    if (task.owner.toString() !== req.user._id.toString()) {
+    if (task.ownerId !== req.user.id) {
       return res.status(403).json({ error: 'Permission denied' });
     }
 
     const { title, description, status, dueDate, priority } = req.body;
+    const updateData = {};
 
-    if (title !== undefined) task.title = title;
-    if (description !== undefined) task.description = description;
-    if (status !== undefined) task.status = status;
-    if (dueDate !== undefined) task.dueDate = dueDate;
-    if (priority !== undefined) task.priority = priority;
+    if (title !== undefined) updateData.title = title;
+    if (description !== undefined) updateData.description = description;
+    if (status !== undefined) updateData.status = status;
+    if (dueDate !== undefined) updateData.dueDate = dueDate;
+    if (priority !== undefined) updateData.priority = priority;
 
-    await task.save();
-    res.json(task);
+    await task.update(updateData);
+
+    const updatedTask = await Task.findByPk(task.id, {
+      include: [
+        {
+          model: User,
+          as: 'owner',
+          attributes: ['username', 'email'],
+        },
+      ],
+    });
+
+    res.json(updatedTask);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -93,18 +132,18 @@ router.put('/:id', authenticateToken, async (req, res) => {
 // Delete task
 router.delete('/:id', authenticateToken, async (req, res) => {
   try {
-    const task = await Task.findById(req.params.id);
+    const task = await Task.findByPk(req.params.id);
 
     if (!task) {
       return res.status(404).json({ error: 'Task not found' });
     }
 
     // Check ownership
-    if (task.owner.toString() !== req.user._id.toString()) {
+    if (task.ownerId !== req.user.id) {
       return res.status(403).json({ error: 'Permission denied' });
     }
 
-    await Task.findByIdAndDelete(req.params.id);
+    await task.destroy();
     res.json({ message: 'Task deleted successfully' });
   } catch (error) {
     res.status(500).json({ error: error.message });

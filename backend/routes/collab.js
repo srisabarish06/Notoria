@@ -1,7 +1,7 @@
 import express from 'express';
-import Note from '../models/Note.js';
-import Collab from '../models/Collab.js';
-import User from '../models/User.js';
+import Note from '../models/NoteSequelize.js';
+import Collab from '../models/CollabSequelize.js';
+import User from '../models/UserSequelize.js';
 import { authenticateToken } from '../middleware/auth.js';
 
 const router = express.Router();
@@ -9,13 +9,25 @@ const router = express.Router();
 // Get all collaboration invites for user
 router.get('/invites', authenticateToken, async (req, res) => {
   try {
-    const invites = await Collab.find({
-      userId: req.user._id,
-      status: 'pending',
-    })
-      .populate('noteId', 'title')
-      .populate('invitedBy', 'username email')
-      .sort({ createdAt: -1 });
+    const invites = await Collab.findAll({
+      where: {
+        userId: req.user.id,
+        status: 'pending',
+      },
+      include: [
+        {
+          model: Note,
+          as: 'note',
+          attributes: ['title'],
+        },
+        {
+          model: User,
+          as: 'invitedBy',
+          attributes: ['username', 'email'],
+        },
+      ],
+      order: [['createdAt', 'DESC']],
+    });
 
     res.json(invites);
   } catch (error) {
@@ -26,28 +38,18 @@ router.get('/invites', authenticateToken, async (req, res) => {
 // Accept collaboration invite
 router.post('/invites/:id/accept', authenticateToken, async (req, res) => {
   try {
-    const collab = await Collab.findById(req.params.id);
+    const collab = await Collab.findByPk(req.params.id);
 
     if (!collab) {
       return res.status(404).json({ error: 'Invite not found' });
     }
 
-    if (collab.userId.toString() !== req.user._id.toString()) {
+    if (collab.userId !== req.user.id) {
       return res.status(403).json({ error: 'Permission denied' });
     }
 
     collab.status = 'accepted';
     await collab.save();
-
-    // Add to note collaborators
-    const note = await Note.findById(collab.noteId);
-    if (note) {
-      note.collaborators.push({
-        user: req.user._id,
-        role: collab.role,
-      });
-      await note.save();
-    }
 
     res.json({ message: 'Invite accepted', collab });
   } catch (error) {
@@ -58,13 +60,13 @@ router.post('/invites/:id/accept', authenticateToken, async (req, res) => {
 // Decline collaboration invite
 router.post('/invites/:id/decline', authenticateToken, async (req, res) => {
   try {
-    const collab = await Collab.findById(req.params.id);
+    const collab = await Collab.findByPk(req.params.id);
 
     if (!collab) {
       return res.status(404).json({ error: 'Invite not found' });
     }
 
-    if (collab.userId.toString() !== req.user._id.toString()) {
+    if (collab.userId !== req.user.id) {
       return res.status(403).json({ error: 'Permission denied' });
     }
 
@@ -87,58 +89,71 @@ router.post('/share', authenticateToken, async (req, res) => {
     }
 
     // Find note
-    const note = await Note.findById(noteId);
+    const note = await Note.findByPk(noteId);
 
     if (!note) {
       return res.status(404).json({ error: 'Note not found' });
     }
 
     // Check ownership
-    if (note.owner.toString() !== req.user._id.toString()) {
+    if (note.ownerId !== req.user.id) {
       return res.status(403).json({ error: 'Only owner can share note' });
     }
 
     // Find user to invite
-    const userToInvite = await User.findOne({ email: userEmail });
+    const userToInvite = await User.findOne({
+      where: { email: userEmail },
+    });
 
     if (!userToInvite) {
       return res.status(404).json({ error: 'User not found' });
     }
 
     // Check if already collaborator
-    const existingCollab = note.collaborators.find(
-      (c) => c.user.toString() === userToInvite._id.toString()
-    );
+    const existingCollab = await Collab.findOne({
+      where: {
+        noteId: note.id,
+        userId: userToInvite.id,
+      },
+    });
 
     if (existingCollab) {
       return res.status(400).json({ error: 'User is already a collaborator' });
     }
 
     // Create collaboration invite
-    const collab = new Collab({
-      noteId,
-      userId: userToInvite._id,
+    const collab = await Collab.create({
+      noteId: note.id,
+      userId: userToInvite.id,
       role: role || 'editor',
-      invitedBy: req.user._id,
+      invitedById: req.user.id,
       status: 'pending',
     });
-
-    await collab.save();
 
     // Emit Socket.IO event for notification
     const io = req.app.get('io');
     if (io) {
       io.emit('collab-invite', {
-        userId: userToInvite._id.toString(),
-        noteId,
+        userId: userToInvite.id,
+        noteId: note.id,
         noteTitle: note.title,
         invitedBy: req.user.username,
       });
     }
 
+    const collabWithUser = await Collab.findByPk(collab.id, {
+      include: [
+        {
+          model: User,
+          as: 'user',
+          attributes: ['username', 'email'],
+        },
+      ],
+    });
+
     res.status(201).json({
       message: 'Invitation sent',
-      collab: await collab.populate('userId', 'username email'),
+      collab: collabWithUser,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -148,8 +163,21 @@ router.post('/share', authenticateToken, async (req, res) => {
 // Get collaborators for a note
 router.get('/note/:noteId', authenticateToken, async (req, res) => {
   try {
-    const note = await Note.findById(req.params.noteId)
-      .populate('collaborators.user', 'username email');
+    const note = await Note.findByPk(req.params.noteId, {
+      include: [
+        {
+          model: Collab,
+          as: 'collaborators',
+          include: [
+            {
+              model: User,
+              as: 'user',
+              attributes: ['username', 'email'],
+            },
+          ],
+        },
+      ],
+    });
 
     if (!note) {
       return res.status(404).json({ error: 'Note not found' });
@@ -157,10 +185,8 @@ router.get('/note/:noteId', authenticateToken, async (req, res) => {
 
     // Check access
     const hasAccess =
-      note.owner.toString() === req.user._id.toString() ||
-      note.collaborators.some(
-        (c) => c.user._id.toString() === req.user._id.toString()
-      );
+      note.ownerId === req.user.id ||
+      note.collaborators.some((c) => c.userId === req.user.id);
 
     if (!hasAccess) {
       return res.status(403).json({ error: 'Access denied' });
