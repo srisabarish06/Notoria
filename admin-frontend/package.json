@@ -1,0 +1,14 @@
+{
+  "name": "notoria-admin-frontend",
+  "version": "1.0.0",
+  "description": "Notoria Admin Panel",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^5.0.8"
+  }
+}
