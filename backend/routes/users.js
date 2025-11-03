@@ -1,6 +1,8 @@
 import express from 'express';
 import jwt from 'jsonwebtoken';
-import User from '../models/User.js';
+import bcrypt from 'bcryptjs';
+import { Op } from 'sequelize';
+import User from '../models/UserSequelize.js';
 import { authenticateToken } from '../middleware/auth.js';
 
 const router = express.Router();
@@ -16,7 +18,9 @@ router.post('/register', async (req, res) => {
 
     // Check if user exists
     const existingUser = await User.findOne({
-      $or: [{ email }, { username }],
+      where: {
+        [Op.or]: [{ email }, { username }],
+      },
     });
 
     if (existingUser) {
@@ -24,18 +28,17 @@ router.post('/register', async (req, res) => {
     }
 
     // Create user
-    const user = new User({ username, email, password });
-    await user.save();
+    const user = await User.create({ username, email, password });
 
     // Generate tokens
     const accessToken = jwt.sign(
-      { userId: user._id },
+      { userId: user.id },
       process.env.JWT_SECRET || 'your-secret-key',
       { expiresIn: '15m' }
     );
 
     const refreshToken = jwt.sign(
-      { userId: user._id },
+      { userId: user.id },
       process.env.JWT_REFRESH_SECRET || 'your-refresh-secret-key',
       { expiresIn: '7d' }
     );
@@ -47,7 +50,7 @@ router.post('/register', async (req, res) => {
     res.status(201).json({
       message: 'User registered successfully',
       user: {
-        id: user._id,
+        id: user.id,
         username: user.username,
         email: user.email,
       },
@@ -69,14 +72,16 @@ router.post('/login', async (req, res) => {
     }
 
     // Find user
-    const user = await User.findOne({ email });
+    const user = await User.findOne({
+      where: { email },
+    });
 
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     // Check password
-    const isMatch = await user.comparePassword(password);
+    const isMatch = await bcrypt.compare(password, user.password);
 
     if (!isMatch) {
       return res.status(401).json({ error: 'Invalid credentials' });
@@ -84,13 +89,13 @@ router.post('/login', async (req, res) => {
 
     // Generate tokens
     const accessToken = jwt.sign(
-      { userId: user._id },
+      { userId: user.id },
       process.env.JWT_SECRET || 'your-secret-key',
       { expiresIn: '15m' }
     );
 
     const refreshToken = jwt.sign(
-      { userId: user._id },
+      { userId: user.id },
       process.env.JWT_REFRESH_SECRET || 'your-refresh-secret-key',
       { expiresIn: '7d' }
     );
@@ -102,7 +107,7 @@ router.post('/login', async (req, res) => {
     res.json({
       message: 'Login successful',
       user: {
-        id: user._id,
+        id: user.id,
         username: user.username,
         email: user.email,
         isAdmin: user.isAdmin,
@@ -131,7 +136,7 @@ router.post('/refresh', async (req, res) => {
     );
 
     // Find user
-    const user = await User.findById(decoded.userId);
+    const user = await User.findByPk(decoded.userId);
 
     if (!user || user.refreshToken !== refreshToken) {
       return res.status(403).json({ error: 'Invalid refresh token' });
@@ -139,7 +144,7 @@ router.post('/refresh', async (req, res) => {
 
     // Generate new access token
     const accessToken = jwt.sign(
-      { userId: user._id },
+      { userId: user.id },
       process.env.JWT_SECRET || 'your-secret-key',
       { expiresIn: '15m' }
     );
@@ -158,7 +163,7 @@ router.get('/me', authenticateToken, async (req, res) => {
   try {
     res.json({
       user: {
-        id: req.user._id,
+        id: req.user.id,
         username: req.user.username,
         email: req.user.email,
         isAdmin: req.user.isAdmin,

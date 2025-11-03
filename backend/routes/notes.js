@@ -1,24 +1,74 @@
 import express from 'express';
-import Note from '../models/Note.js';
+import Note from '../models/NoteSequelize.js';
+import User from '../models/UserSequelize.js';
+import Collab from '../models/CollabSequelize.js';
 import { authenticateToken } from '../middleware/auth.js';
+import { Op } from 'sequelize';
 
 const router = express.Router();
 
 // Get all notes for authenticated user
 router.get('/', authenticateToken, async (req, res) => {
   try {
-    const notes = await Note.find({
-      $or: [
-        { owner: req.user._id },
-        { 'collaborators.user': req.user._id },
-        { isPublic: true },
+    const notes = await Note.findAll({
+      where: {
+        [Op.or]: [
+          { ownerId: req.user.id },
+          { isPublic: true },
+        ],
+      },
+      include: [
+        {
+          model: User,
+          as: 'owner',
+          attributes: ['username', 'email'],
+        },
+        {
+          model: Collab,
+          as: 'collaborators',
+          include: [
+            {
+              model: User,
+              as: 'user',
+              attributes: ['username', 'email'],
+            },
+          ],
+        },
       ],
-    })
-      .populate('owner', 'username email')
-      .populate('collaborators.user', 'username email')
-      .sort({ updatedAt: -1 });
+      order: [['updatedAt', 'DESC']],
+    });
 
-    res.json(notes);
+    // Also get notes where user is a collaborator
+    const collabNotes = await Note.findAll({
+      include: [
+        {
+          model: Collab,
+          as: 'collaborators',
+          where: { userId: req.user.id },
+          include: [
+            {
+              model: User,
+              as: 'user',
+              attributes: ['username', 'email'],
+            },
+          ],
+        },
+        {
+          model: User,
+          as: 'owner',
+          attributes: ['username', 'email'],
+        },
+      ],
+      order: [['updatedAt', 'DESC']],
+    });
+
+    // Combine and deduplicate notes
+    const allNotes = [...notes, ...collabNotes];
+    const uniqueNotes = allNotes.filter((note, index, self) =>
+      index === self.findIndex(n => n.id === note.id)
+    );
+
+    res.json(uniqueNotes);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -27,9 +77,26 @@ router.get('/', authenticateToken, async (req, res) => {
 // Get single note
 router.get('/:id', authenticateToken, async (req, res) => {
   try {
-    const note = await Note.findById(req.params.id)
-      .populate('owner', 'username email')
-      .populate('collaborators.user', 'username email');
+    const note = await Note.findByPk(req.params.id, {
+      include: [
+        {
+          model: User,
+          as: 'owner',
+          attributes: ['username', 'email'],
+        },
+        {
+          model: Collab,
+          as: 'collaborators',
+          include: [
+            {
+              model: User,
+              as: 'user',
+              attributes: ['username', 'email'],
+            },
+          ],
+        },
+      ],
+    });
 
     if (!note) {
       return res.status(404).json({ error: 'Note not found' });
@@ -37,10 +104,8 @@ router.get('/:id', authenticateToken, async (req, res) => {
 
     // Check access
     const hasAccess =
-      note.owner._id.toString() === req.user._id.toString() ||
-      note.collaborators.some(
-        (c) => c.user._id.toString() === req.user._id.toString()
-      ) ||
+      note.ownerId === req.user.id ||
+      note.collaborators.some(c => c.userId === req.user.id) ||
       note.isPublic;
 
     if (!hasAccess) {
@@ -58,18 +123,25 @@ router.post('/', authenticateToken, async (req, res) => {
   try {
     const { title, content, tags, isPublic } = req.body;
 
-    const note = new Note({
+    const note = await Note.create({
       title: title || 'Untitled Note',
       content: content || '',
-      tags: tags || [],
-      owner: req.user._id,
+      tags: JSON.stringify(tags || []),
+      ownerId: req.user.id,
       isPublic: isPublic || false,
     });
 
-    await note.save();
-    await note.populate('owner', 'username email');
+    const noteWithOwner = await Note.findByPk(note.id, {
+      include: [
+        {
+          model: User,
+          as: 'owner',
+          attributes: ['username', 'email'],
+        },
+      ],
+    });
 
-    res.status(201).json(note);
+    res.status(201).json(noteWithOwner);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -78,17 +150,23 @@ router.post('/', authenticateToken, async (req, res) => {
 // Update note
 router.put('/:id', authenticateToken, async (req, res) => {
   try {
-    const note = await Note.findById(req.params.id);
+    const note = await Note.findByPk(req.params.id, {
+      include: [
+        {
+          model: Collab,
+          as: 'collaborators',
+        },
+      ],
+    });
 
     if (!note) {
       return res.status(404).json({ error: 'Note not found' });
     }
 
     // Check permissions
-    const isOwner = note.owner.toString() === req.user._id.toString();
+    const isOwner = note.ownerId === req.user.id;
     const isEditor = note.collaborators.some(
-      (c) =>
-        c.user.toString() === req.user._id.toString() && c.role === 'editor'
+      (c) => c.userId === req.user.id && c.role === 'editor'
     );
 
     if (!isOwner && !isEditor) {
@@ -96,30 +174,49 @@ router.put('/:id', authenticateToken, async (req, res) => {
     }
 
     const { title, content, tags, isPublic } = req.body;
+    const updateData = {};
 
-    if (title !== undefined) note.title = title;
-    if (content !== undefined) note.content = content;
-    if (tags !== undefined) note.tags = tags;
-    if (isPublic !== undefined && isOwner) note.isPublic = isPublic;
+    if (title !== undefined) updateData.title = title;
+    if (content !== undefined) updateData.content = content;
+    if (tags !== undefined) updateData.tags = JSON.stringify(tags);
+    if (isPublic !== undefined && isOwner) updateData.isPublic = isPublic;
 
-    await note.save();
+    await note.update(updateData);
 
     // Emit Socket.IO event for real-time updates
     const io = req.app.get('io');
     if (io) {
-      io.to(`note-${note._id}`).emit('note-updated', {
-        noteId: note._id,
+      io.to(`note-${note.id}`).emit('note-updated', {
+        noteId: note.id,
         title: note.title,
         content: note.content,
-        tags: note.tags,
-        updatedBy: req.user._id,
+        tags: JSON.parse(note.tags || '[]'),
+        updatedBy: req.user.id,
       });
     }
 
-    await note.populate('owner', 'username email');
-    await note.populate('collaborators.user', 'username email');
+    const updatedNote = await Note.findByPk(note.id, {
+      include: [
+        {
+          model: User,
+          as: 'owner',
+          attributes: ['username', 'email'],
+        },
+        {
+          model: Collab,
+          as: 'collaborators',
+          include: [
+            {
+              model: User,
+              as: 'user',
+              attributes: ['username', 'email'],
+            },
+          ],
+        },
+      ],
+    });
 
-    res.json(note);
+    res.json(updatedNote);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -128,18 +225,18 @@ router.put('/:id', authenticateToken, async (req, res) => {
 // Delete note
 router.delete('/:id', authenticateToken, async (req, res) => {
   try {
-    const note = await Note.findById(req.params.id);
+    const note = await Note.findByPk(req.params.id);
 
     if (!note) {
       return res.status(404).json({ error: 'Note not found' });
     }
 
     // Only owner can delete
-    if (note.owner.toString() !== req.user._id.toString()) {
+    if (note.ownerId !== req.user.id) {
       return res.status(403).json({ error: 'Only owner can delete note' });
     }
 
-    await Note.findByIdAndDelete(req.params.id);
+    await note.destroy();
     res.json({ message: 'Note deleted successfully' });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -149,35 +246,60 @@ router.delete('/:id', authenticateToken, async (req, res) => {
 // Add collaborator
 router.post('/:id/collaborators', authenticateToken, async (req, res) => {
   try {
-    const note = await Note.findById(req.params.id);
+    const note = await Note.findByPk(req.params.id);
 
     if (!note) {
       return res.status(404).json({ error: 'Note not found' });
     }
 
     // Only owner can add collaborators
-    if (note.owner.toString() !== req.user._id.toString()) {
+    if (note.ownerId !== req.user.id) {
       return res.status(403).json({ error: 'Only owner can add collaborators' });
     }
 
     const { userId, role } = req.body;
 
     // Check if already a collaborator
-    const existingCollab = note.collaborators.find(
-      (c) => c.user.toString() === userId
-    );
+    const existingCollab = await Collab.findOne({
+      where: {
+        noteId: note.id,
+        userId: userId,
+      },
+    });
 
     if (existingCollab) {
       return res.status(400).json({ error: 'User is already a collaborator' });
     }
 
-    note.collaborators.push({ user: userId, role: role || 'editor' });
-    await note.save();
+    await Collab.create({
+      noteId: note.id,
+      userId: userId,
+      role: role || 'editor',
+      invitedById: req.user.id,
+    });
 
-    await note.populate('owner', 'username email');
-    await note.populate('collaborators.user', 'username email');
+    const updatedNote = await Note.findByPk(note.id, {
+      include: [
+        {
+          model: User,
+          as: 'owner',
+          attributes: ['username', 'email'],
+        },
+        {
+          model: Collab,
+          as: 'collaborators',
+          include: [
+            {
+              model: User,
+              as: 'user',
+              attributes: ['username', 'email'],
+            },
+          ],
+        },
+      ],
+    });
 
-    res.json(note);
+    res.json(updatedNote);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

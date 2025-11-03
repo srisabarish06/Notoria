@@ -3,7 +3,7 @@ import dotenv from 'dotenv';
 import cors from 'cors';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
-import connectDB from './config/mongo.js';
+import { connectDB } from './config/mysql.js';
 
 // Import routes
 import userRoutes from './routes/users.js';
@@ -33,7 +33,7 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Connect to MongoDB
+// Connect to MySQL
 connectDB();
 
 // Socket.IO connection handling

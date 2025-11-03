@@ -1,5 +1,5 @@
 import jwt from 'jsonwebtoken';
-import User from '../models/User.js';
+import User from '../models/UserSequelize.js';
 
 export const authenticateToken = async (req, res, next) => {
   try {
@@ -11,7 +11,9 @@ export const authenticateToken = async (req, res, next) => {
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
-    const user = await User.findById(decoded.userId).select('-password -refreshToken');
+    const user = await User.findByPk(decoded.userId, {
+      attributes: { exclude: ['password', 'refreshToken'] },
+    });
     
     if (!user) {
       return res.status(401).json({ error: 'User not found' });
