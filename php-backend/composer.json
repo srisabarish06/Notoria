@@ -1,0 +1,25 @@
+{
+    "name": "notoria/php-backend",
+    "description": "Notoria PHP Backend API",
+    "type": "project",
+    "require": {
+        "php": ">=8.1",
+        "slim/slim": "^4.12",
+        "slim/psr7": "^1.6",
+        "firebase/php-jwt": "^6.8",
+        "cboden/ratchet": "^0.4.4",
+        "react/event-loop": "^1.4",
+        "ext-pdo": "*",
+        "ext-json": "*",
+        "ext-mbstring": "*"
+    },
+    "autoload": {
+        "psr-4": {
+            "Notoria\\": "src/"
+        }
+    },
+    "scripts": {
+        "start": "php -S localhost:8000 -t public",
+        "websocket": "php bin/websocket-server.php"
+    }
+}
